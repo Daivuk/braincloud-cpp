@@ -19,10 +19,10 @@
 #include <arpa/inet.h>
 #endif
 
-#define VERBOSE_LOG 1
+#define VERBOSE_LOG 0
 
 static const int CONTROL_BYTES_SIZE = 1;
-static const int MAX_PACKET_ID_HISTORY = 128;
+static const int MAX_PACKET_ID_HISTORY = 60 * 10; // So we last 10 seconds at 60 fps
 
 static const int MAX_PLAYERS = 40;
 static const int INVALID_NET_ID = MAX_PLAYERS;
@@ -131,6 +131,7 @@ namespace BrainCloud
         m_orderedReliablePackets.clear();
         m_eventPool.reclaim();
         m_packetPool.reclaim();
+        m_rsmgHistory.clear();
 
         switch (m_connectionType)
         {
@@ -245,6 +246,14 @@ namespace BrainCloud
 
     void RelayComms::send(const uint8_t* in_data, int in_size, uint64_t in_playerMask, bool in_reliable, bool in_ordered, eRelayChannel in_channel)
     {
+        if (!isConnected()) return;
+        if (in_size > 1024)
+        {
+            disconnect();
+            queueErrorEvent("Relay Error: Packet is too big " + std::to_string(in_size) + " > max 1024");
+            return;
+        }
+
         // Allocate buffer
         auto totalSize = in_size + 11;
         auto pPacket = m_packetPool.alloc();
@@ -267,7 +276,7 @@ namespace BrainCloud
         uint64_t playerMask = 0;
         for (uint64_t i = 0, len = (uint64_t)MAX_PLAYERS; i < len; ++i)
         {
-            playerMask |= ((in_playerMask >> (MAX_PLAYERS - i - 1)) & 1) << i;
+            playerMask |= ((in_playerMask >> ((uint64_t)MAX_PLAYERS - i - 1)) & 1) << i;
         }
         playerMask = (playerMask << 8) & 0x0000FFFFFFFFFF00;
 
@@ -281,7 +290,7 @@ namespace BrainCloud
         {
             packetId = it->second;
         }
-        m_sendPacketId[ackIdWithoutPacketId] = (packetId + 1) & 0xFFF;
+        m_sendPacketId[ackIdWithoutPacketId] = (packetId + 1) & MAX_PACKET_ID;
 
         // Add packet id to the header, then encode
         rh |= packetId;
@@ -606,7 +615,7 @@ namespace BrainCloud
         auto rh = (int)ntohs(*(u_short*)in_data);
         auto playerMask0 = (uint64_t)ntohs(*(u_short*)(in_data + 2));
         auto playerMask1 = (uint64_t)ntohs(*(u_short*)(in_data + 4));
-        auto playerMask2 = (uint64_t)ntohs(*(u_short*)(in_data + 6)) & 0xFF00;
+        auto playerMask2 = (uint64_t)ntohs(*(u_short*)(in_data + 6));
         auto ackId = 
             (((uint64_t)rh << 48)          & 0xFFFF000000000000) |
             (((uint64_t)playerMask0 << 32) & 0x0000FFFF00000000) |
@@ -617,15 +626,7 @@ namespace BrainCloud
         auto ordered = rh & ORDERED_BIT ? true : false;
         auto channel = (rh >> 12) & 0x3;
         auto packetId = rh & 0xFFF;
-        auto netId = in_data[7];
-
-        // Read inverted player mask
-        uint64_t in_playerMask = (ackId >> 8) & 0x000000FFFFFFFFFF;
-        uint64_t playerMask = 0;
-        for (uint64_t i = 0, len = (uint64_t)MAX_PLAYERS; i < len; ++i)
-        {
-            playerMask |= ((in_playerMask >> (MAX_PLAYERS - i - 1)) & 1) << i;
-        }
+        auto netId = (uint8_t)(playerMask2 & 0x00FF);
 
         // Reconstruct ack id without packet id
         if (m_connectionType == eRelayConnectionType::UDP)
@@ -654,7 +655,7 @@ namespace BrainCloud
 #if VERBOSE_LOG
                         if (m_loggingEnabled)
                         {
-                            std::cout << "Duplicated packet from " << netId << ". got " << packetId << std::endl;
+                            std::cout << "Duplicated packet from " << (int)netId << ". got " << packetId << std::endl;
                         }
 #endif
                         return;
@@ -675,7 +676,17 @@ namespace BrainCloud
                         for (; insertIdx < (int)orderedReliablePackets.size(); ++insertIdx)
                         {
                             auto pPacket = orderedReliablePackets[insertIdx];
-                            if (packetLE(pPacket->id, packetId)) break;
+                            if (pPacket->id == packetId)
+                            {
+#if VERBOSE_LOG
+                                if (m_loggingEnabled)
+                                {
+                                    std::cout << "Duplicated packet from " << (int)netId << ". got " << packetId << std::endl;
+                                }
+#endif
+                                return;
+                            }
+                            if (packetLE(packetId, pPacket->id)) break;
                         }
                         auto pNewPacket = m_packetPool.alloc();
                         pNewPacket->id = packetId;
@@ -685,7 +696,7 @@ namespace BrainCloud
 #if VERBOSE_LOG
                         if (m_loggingEnabled)
                         {
-                            std::cout << "Queuing out of order reliable " << netId << ". got " << packetId << std::endl;
+                            std::cout << "Queuing out of order reliable from " << (int)netId << ". got " << packetId << std::endl;
                         }
 #endif
                         return;
@@ -720,7 +731,7 @@ namespace BrainCloud
 #if VERBOSE_LOG
                         if (m_loggingEnabled)
                         {
-                            std::cout << "Out of order packet from " << netId << ". Expecting " << ((prevPacketId + 1) & MAX_PACKET_ID) << ", got " << packetId << std::endl;
+                            std::cout << "Out of order packet from " << (int)netId << ". Expecting " << ((prevPacketId + 1) & MAX_PACKET_ID) << ", got " << packetId << std::endl;
                         }
 #endif
                         return;
@@ -768,7 +779,6 @@ namespace BrainCloud
                 // Process reliable resends
                 if (m_connectionType == eRelayConnectionType::UDP)
                 {
-                    for (int i = 0; i < CHANNEL_COUNT; ++i)
                     for (auto it = m_reliables.begin(); it != m_reliables.end(); ++it)
                     {
                         auto pPacket = it->second;
@@ -778,8 +788,9 @@ namespace BrainCloud
                             queueErrorEvent("Relay disconnected, too many packet lost");
                             break;
                         }
-                        if (pPacket->lastResendTime - now >= std::chrono::milliseconds((int)pPacket->resendInterval))
+                        if (now - pPacket->lastResendTime >= std::chrono::milliseconds((int)pPacket->resendInterval))
                         {
+                            pPacket->lastResendTime = now;
                             pPacket->resendInterval = std::min<double>((double)pPacket->resendInterval * 1.25, (double)MAX_RELIABLE_RESEND_INTERVAL_MS);
                             send(pPacket->data.data(), (int)pPacket->data.size());
 #if VERBOSE_LOG

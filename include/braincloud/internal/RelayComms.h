@@ -194,10 +194,10 @@ namespace BrainCloud
 
         // Packet ID/History
         std::vector<int> m_rsmgHistory;
-        std::unordered_map<uint64_t, int> m_sendPacketId;
-        std::unordered_map<uint64_t, int> m_recvPacketId;
-        std::unordered_map<uint64_t, Packet*> m_reliables;
-        std::unordered_map<uint64_t, std::vector<Packet*>> m_orderedReliablePackets;
+        std::map<uint64_t, int> m_sendPacketId;
+        std::map<uint64_t, int> m_recvPacketId;
+        std::map<uint64_t, Packet*> m_reliables;
+        std::map<uint64_t, std::vector<Packet*>> m_orderedReliablePackets;
 
         // Memory
         Pool<Event> m_eventPool;

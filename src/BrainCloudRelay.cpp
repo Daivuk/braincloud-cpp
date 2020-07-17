@@ -73,7 +73,20 @@ namespace BrainCloud
         m_commsLayer->deregisterSystemCallback();
     }
 
-    void BrainCloudRelay::send(const uint8_t* in_data, int in_size, uint64_t in_playerMask, bool in_reliable, bool in_ordered, eRelayChannel in_channel)
+    void BrainCloudRelay::send(const uint8_t* in_data, int in_size, int toNetId, bool in_reliable, bool in_ordered, eRelayChannel in_channel)
+    {
+        if (toNetId == TO_ALL_PLAYERS)
+        {
+            sendToAll(in_data, in_size, in_reliable, in_ordered, in_channel);
+        }
+        else
+        {
+            uint64_t playerMask = (uint64_t)1 << (uint64_t)toNetId;
+            m_commsLayer->send(in_data, in_size, playerMask, in_reliable, in_ordered, in_channel);
+        }
+    }
+
+    void BrainCloudRelay::sendToPlayers(const uint8_t* in_data, int in_size, uint64_t in_playerMask, bool in_reliable, bool in_ordered, eRelayChannel in_channel)
     {
         m_commsLayer->send(in_data, in_size, in_playerMask, in_reliable, in_ordered, in_channel);
     }
@@ -85,7 +98,7 @@ namespace BrainCloud
 
         uint64_t myBit = (uint64_t)1 << (uint64_t)myNetId;
         uint64_t myInvertedBits = ~myBit;
-        uint64_t playerMask = ALL_PLAYERS & myInvertedBits;
+        uint64_t playerMask = TO_ALL_PLAYERS & myInvertedBits;
         m_commsLayer->send(in_data, in_size, playerMask, in_reliable, in_ordered, in_channel);
     }
 };
