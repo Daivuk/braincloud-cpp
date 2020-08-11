@@ -311,7 +311,7 @@ namespace BrainCloud
         send(pPacket->data.data(), (int)pPacket->data.size());
 
         // UDP, store reliable in send map
-        if (in_reliable)
+        if (in_reliable && m_connectionType == eRelayConnectionType::UDP)
         {
             pPacket->id = packetId;
             pPacket->lastResendTime = std::chrono::system_clock::now();
